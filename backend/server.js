@@ -7,6 +7,7 @@ const axios = require("axios");
 const nodemailer = require("nodemailer");
 const mongoose = require("mongoose");
 const path = require("path");
+const fs = require("fs");
 
 dotenv.config();
 
@@ -1524,31 +1525,37 @@ app.get("/leaderboard", async (req, res) => {
 
 
 // =====================================================
-// SERVE FRONTEND & SPA FALLBACK
+// SERVE FRONTEND & SPA FALLBACK (Local & Docker)
 // =====================================================
 
-app.use(express.static(path.join(__dirname, "../frontend/dist")));
+const frontendDistPath = path.join(__dirname, "../frontend/dist");
 
-app.get("/{*path}", (req, res) => {
-    res.sendFile(path.join(__dirname, "../frontend/dist/index.html"));
-});
+if (!process.env.VERCEL && fs.existsSync(frontendDistPath)) {
+    app.use(express.static(frontendDistPath));
+
+    app.get("/{*path}", (req, res) => {
+        res.sendFile(path.join(frontendDistPath, "index.html"));
+    });
+} else {
+    app.get("/", (req, res) => {
+        res.json({
+            message: "Online Quiz AI Backend API is running",
+            health: "/api/health"
+        });
+    });
+}
 
 
 // =====================================================
-// START SERVER
+// START SERVER & EXPORT FOR VERCEL
 // =====================================================
 
-const PORT =
-    process.env.PORT || 5000;
+const PORT = process.env.PORT || 5000;
 
+if (require.main === module) {
+    app.listen(PORT, () => {
+        console.log(`Server running on http://localhost:${PORT}`);
+    });
+}
 
-app.listen(
-    PORT,
-    () => {
-
-        console.log(
-            `Server running on http://localhost:${PORT}`
-        );
-
-    }
-);
+module.exports = app;
