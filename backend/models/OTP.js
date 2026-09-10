@@ -12,9 +12,22 @@ const otpSchema = new mongoose.Schema({
         type: String,
         required: true
     },
+    type: {
+        type: String,
+        enum: ["forgot-password", "registration"],
+        default: "forgot-password"
+    },
+    registrationData: {
+        name: { type: String },
+        password: { type: String } // ALWAYS bcrypt hashed
+    },
     verified: {
         type: Boolean,
         default: false
+    },
+    lastSentAt: {
+        type: Date,
+        default: Date.now
     },
     expiresAt: {
         type: Date,

@@ -52,6 +52,20 @@ function App() {
   const [confirmPassword, setConfirmPassword] = useState("");
   const [showConfirmPassword, setShowConfirmPassword] = useState(false);
 
+  // Registration OTP state
+  const [regOtp, setRegOtp] = useState("");
+  const [resendCooldown, setResendCooldown] = useState(0);
+
+  useEffect(() => {
+    let timer;
+    if (resendCooldown > 0) {
+      timer = setInterval(() => {
+        setResendCooldown((prev) => prev - 1);
+      }, 1000);
+    }
+    return () => clearInterval(timer);
+  }, [resendCooldown]);
+
   // Dashboard state
   const [stats, setStats] = useState({
     quizzesTaken: 0,
@@ -157,14 +171,68 @@ function App() {
       });
       const data = await response.json();
       if (!response.ok) {
-        setMessage(data.message || "Registration failed");
+        setMessage(data.error || data.message || "Registration failed");
         return;
       }
-      setMessage("Registration successful! Please sign in.");
+      setMessage("Verification code sent to your email. Please verify.");
+      setResendCooldown(30);
+      changePage("verify-register-otp");
+    } catch (error) {
+      setMessage("Cannot connect to backend server.");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleVerifyRegisterOtp = async (e) => {
+    e.preventDefault();
+    if (!regOtp) {
+      setMessage("Please enter the 6-digit verification code");
+      return;
+    }
+    setLoading(true);
+    setMessage("");
+    try {
+      const response = await fetch(`${API_URL}/verify-register-otp`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ email, otp: regOtp }),
+      });
+      const data = await response.json();
+      if (!response.ok) {
+        setMessage(data.error || data.message || "Verification failed");
+        return;
+      }
+      setMessage("Account created successfully! Please sign in.");
       setName("");
       setEmail("");
       setPassword("");
+      setRegOtp("");
       changePage("login");
+    } catch (error) {
+      setMessage("Cannot connect to backend server.");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleResendRegisterOtp = async () => {
+    if (resendCooldown > 0) return;
+    setLoading(true);
+    setMessage("");
+    try {
+      const response = await fetch(`${API_URL}/resend-register-otp`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ email }),
+      });
+      const data = await response.json();
+      if (!response.ok) {
+        setMessage(data.error || data.message || "Failed to resend code");
+        return;
+      }
+      setMessage("New verification code sent to your email.");
+      setResendCooldown(30);
     } catch (error) {
       setMessage("Cannot connect to backend server.");
     } finally {
@@ -702,6 +770,75 @@ function App() {
               onClick={() => { changePage("login"); }}
             >
               Sign in
+            </button>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  if (page === "verify-register-otp") {
+    return (
+      <div className="auth-page">
+        <div className="auth-panel">
+          <div className="auth-header">
+            <div className="auth-logo">
+              <div className="auth-logo-mark">Q</div>
+              <span className="auth-logo-name">QuizAI</span>
+            </div>
+            <h1 className="auth-title">Verify your email</h1>
+            <p className="auth-subtitle">
+              We sent a 6-digit verification code to <strong>{email}</strong>
+            </p>
+          </div>
+
+          <form onSubmit={handleVerifyRegisterOtp} className="auth-form">
+            <div className="form-group">
+              <label className="form-label">Verification code</label>
+              <input
+                type="text"
+                className="form-input"
+                placeholder="6-digit code"
+                maxLength={6}
+                value={regOtp}
+                onChange={(e) => setRegOtp(e.target.value)}
+                required
+                style={{ letterSpacing: "4px", fontSize: "1.25rem", textAlign: "center" }}
+              />
+            </div>
+
+            {message && (
+              <div className={`alert ${message.toLowerCase().includes("sent") || message.toLowerCase().includes("created") || message.toLowerCase().includes("success") ? "alert-success" : "alert-error"}`}>
+                {message}
+              </div>
+            )}
+
+            <button type="submit" className="btn btn-primary btn-full btn-lg" disabled={loading}>
+              {loading ? <span className="btn-spinner"></span> : "Verify & Complete Signup"}
+            </button>
+          </form>
+
+          <div style={{ textAlign: "center", marginTop: "1rem" }}>
+            <button
+              type="button"
+              className="btn btn-ghost btn-sm"
+              onClick={handleResendRegisterOtp}
+              disabled={loading || resendCooldown > 0}
+            >
+              {resendCooldown > 0 ? `Resend Code (${resendCooldown}s)` : "Resend Code"}
+            </button>
+          </div>
+
+          <div className="auth-footer">
+            Incorrect email?{" "}
+            <button
+              type="button"
+              onClick={() => {
+                setRegOtp("");
+                changePage("register");
+              }}
+            >
+              Back to sign up
             </button>
           </div>
         </div>

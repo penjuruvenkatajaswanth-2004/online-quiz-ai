@@ -97,6 +97,10 @@ app.get("/test-db", async (req, res) => {
 // REGISTER
 // =====================================================
 
+// =====================================================
+// REGISTER (INITIATE OTP VERIFICATION)
+// =====================================================
+
 app.post("/register", async (req, res) => {
 
     try {
@@ -113,7 +117,9 @@ app.post("/register", async (req, res) => {
             });
         }
 
-        const existingUser = await User.findOne({ email });
+        const normalizedEmail = email.trim().toLowerCase();
+
+        const existingUser = await User.findOne({ email: normalizedEmail });
 
         if (existingUser) {
             return res.status(409).json({
@@ -121,19 +127,218 @@ app.post("/register", async (req, res) => {
             });
         }
 
-        const hashedPassword =
-            await bcrypt.hash(password, 10);
+        // ALWAYS hash password with bcrypt before temporary storage
+        const hashedPassword = await bcrypt.hash(password, 10);
 
-        const newUser = await User.create({
-            name,
-            email,
-            password: hashedPassword
+        // Invalidate previous pending registration OTPs for this email
+        await OTP.deleteMany({ email: normalizedEmail, type: "registration" });
+
+        const otp = generateOTP();
+
+        await OTP.create({
+            email: normalizedEmail,
+            otp: otp,
+            type: "registration",
+            registrationData: {
+                name: name.trim(),
+                password: hashedPassword
+            },
+            lastSentAt: new Date(),
+            expiresAt: new Date(Date.now() + 5 * 60 * 1000),
+            verified: false
         });
+
+        const mailOptions = {
+            from: `"QuizAI" <${process.env.EMAIL_USER}>`,
+            to: normalizedEmail,
+            subject: "QuizAI — Verify Your Registration OTP",
+            html: `
+                <div style="font-family: Arial, sans-serif; max-width: 480px; margin: 0 auto; padding: 32px; background: #1e2030; border-radius: 12px; color: #f1f5f9;">
+                    <h2 style="text-align: center; color: #ec4899;">⚡ QuizAI</h2>
+                    <p style="text-align: center; color: #94a3b8;">Registration Email Verification</p>
+                    <div style="text-align: center; margin: 32px 0;">
+                        <div style="display: inline-block; padding: 16px 40px; background: linear-gradient(135deg, #ec4899, #f97316); border-radius: 12px; font-size: 32px; font-weight: bold; letter-spacing: 8px; color: white;">
+                            ${otp}
+                        </div>
+                    </div>
+                    <p style="text-align: center; color: #94a3b8; font-size: 14px;">Your verification code is valid for <strong>5 minutes</strong>.</p>
+                    <p style="text-align: center; color: #64748b; font-size: 12px; margin-top: 24px;">If you did not attempt to register on QuizAI, please ignore this email.</p>
+                </div>
+            `
+        };
+
+        try {
+            await transporter.sendMail(mailOptions);
+            res.status(200).json({
+                message: "Verification code sent to your email"
+            });
+        } catch (mailErr) {
+            console.error("Registration OTP email send error:", mailErr.message);
+            return res.status(500).json({
+                message: "Failed to send verification code",
+                error: mailErr.message
+            });
+        }
+
+    } catch (error) {
+
+        res.status(500).json({
+            message: "Server error",
+            error: error.message
+        });
+
+    }
+
+});
+
+
+// =====================================================
+// VERIFY REGISTER OTP & CREATE USER
+// =====================================================
+
+app.post("/verify-register-otp", async (req, res) => {
+
+    try {
+
+        const { email, otp } = req.body;
+
+        if (!email || !otp) {
+            return res.status(400).json({
+                message: "Email and verification code are required"
+            });
+        }
+
+        const normalizedEmail = email.trim().toLowerCase();
+
+        const stored = await OTP.findOne({ email: normalizedEmail, type: "registration" }).sort({ createdAt: -1 });
+
+        if (!stored || !stored.registrationData) {
+            return res.status(400).json({
+                message: "No pending registration found. Please submit signup form again."
+            });
+        }
+
+        if (new Date() > stored.expiresAt) {
+            await OTP.deleteMany({ email: normalizedEmail, type: "registration" });
+            return res.status(400).json({
+                message: "Verification code has expired. Please click Resend Code."
+            });
+        }
+
+        if (stored.otp !== String(otp).trim()) {
+            return res.status(400).json({
+                message: "Invalid verification code"
+            });
+        }
+
+        // Race condition prevention: check if email was registered concurrently
+        const existingUser = await User.findOne({ email: normalizedEmail });
+        if (existingUser) {
+            await OTP.deleteMany({ email: normalizedEmail, type: "registration" });
+            return res.status(409).json({
+                message: "Email is already registered"
+            });
+        }
+
+        // Create permanent User record using pre-hashed password
+        const newUser = await User.create({
+            name: stored.registrationData.name,
+            email: normalizedEmail,
+            password: stored.registrationData.password
+        });
+
+        await OTP.deleteMany({ email: normalizedEmail, type: "registration" });
 
         res.status(201).json({
-            message: "User registered successfully",
+            message: "Account created successfully! Please sign in.",
             userId: newUser._id
         });
+
+    } catch (error) {
+
+        res.status(500).json({
+            message: "Server error",
+            error: error.message
+        });
+
+    }
+
+});
+
+
+// =====================================================
+// RESEND REGISTER OTP (SERVER-SIDE RATE LIMITED)
+// =====================================================
+
+app.post("/resend-register-otp", async (req, res) => {
+
+    try {
+
+        const { email } = req.body;
+
+        if (!email) {
+            return res.status(400).json({
+                message: "Email is required"
+            });
+        }
+
+        const normalizedEmail = email.trim().toLowerCase();
+
+        const stored = await OTP.findOne({ email: normalizedEmail, type: "registration" }).sort({ createdAt: -1 });
+
+        if (!stored || !stored.registrationData) {
+            return res.status(400).json({
+                message: "Registration session expired. Please sign up again."
+            });
+        }
+
+        // Server-side 30-second resend rate limit check
+        const cooldownMs = 30 * 1000;
+        if (stored.lastSentAt && (Date.now() - new Date(stored.lastSentAt).getTime()) < cooldownMs) {
+            const remainingSeconds = Math.ceil((cooldownMs - (Date.now() - new Date(stored.lastSentAt).getTime())) / 1000);
+            return res.status(429).json({
+                message: `Please wait ${remainingSeconds} seconds before requesting a new code.`
+            });
+        }
+
+        const newOtp = generateOTP();
+
+        stored.otp = newOtp;
+        stored.lastSentAt = new Date();
+        stored.expiresAt = new Date(Date.now() + 5 * 60 * 1000);
+        await stored.save();
+
+        const mailOptions = {
+            from: `"QuizAI" <${process.env.EMAIL_USER}>`,
+            to: normalizedEmail,
+            subject: "QuizAI — Verify Your Registration OTP",
+            html: `
+                <div style="font-family: Arial, sans-serif; max-width: 480px; margin: 0 auto; padding: 32px; background: #1e2030; border-radius: 12px; color: #f1f5f9;">
+                    <h2 style="text-align: center; color: #ec4899;">⚡ QuizAI</h2>
+                    <p style="text-align: center; color: #94a3b8;">Registration Email Verification</p>
+                    <div style="text-align: center; margin: 32px 0;">
+                        <div style="display: inline-block; padding: 16px 40px; background: linear-gradient(135deg, #ec4899, #f97316); border-radius: 12px; font-size: 32px; font-weight: bold; letter-spacing: 8px; color: white;">
+                            ${newOtp}
+                        </div>
+                    </div>
+                    <p style="text-align: center; color: #94a3b8; font-size: 14px;">Your verification code is valid for <strong>5 minutes</strong>.</p>
+                    <p style="text-align: center; color: #64748b; font-size: 12px; margin-top: 24px;">If you did not attempt to register on QuizAI, please ignore this email.</p>
+                </div>
+            `
+        };
+
+        try {
+            await transporter.sendMail(mailOptions);
+            res.json({
+                message: "New verification code sent to your email"
+            });
+        } catch (mailErr) {
+            console.error("Resend OTP error:", mailErr.message);
+            return res.status(500).json({
+                message: "Failed to resend verification code",
+                error: mailErr.message
+            });
+        }
 
     } catch (error) {
 
@@ -255,13 +460,14 @@ app.post("/forgot-password", async (req, res) => {
             });
         }
 
-        await OTP.deleteMany({ email: normalizedEmail });
+        await OTP.deleteMany({ email: normalizedEmail, type: "forgot-password" });
 
         const otp = generateOTP();
 
         await OTP.create({
             email: normalizedEmail,
             otp: otp,
+            type: "forgot-password",
             expiresAt: new Date(Date.now() + 5 * 60 * 1000),
             verified: false
         });
@@ -328,7 +534,7 @@ app.post("/verify-otp", async (req, res) => {
 
         const normalizedEmail = email.trim().toLowerCase();
 
-        const stored = await OTP.findOne({ email: normalizedEmail }).sort({ createdAt: -1 });
+        const stored = await OTP.findOne({ email: normalizedEmail, type: "forgot-password" }).sort({ createdAt: -1 });
 
         if (!stored) {
             return res.status(400).json({
@@ -337,7 +543,7 @@ app.post("/verify-otp", async (req, res) => {
         }
 
         if (new Date() > stored.expiresAt) {
-            await OTP.deleteMany({ email: normalizedEmail });
+            await OTP.deleteMany({ email: normalizedEmail, type: "forgot-password" });
             return res.status(400).json({
                 message: "OTP has expired. Please request a new one."
             });
@@ -386,7 +592,7 @@ app.post("/reset-password", async (req, res) => {
 
         const normalizedEmail = email.trim().toLowerCase();
 
-        const stored = await OTP.findOne({ email: normalizedEmail, verified: true });
+        const stored = await OTP.findOne({ email: normalizedEmail, type: "forgot-password", verified: true });
 
         if (!stored) {
             return res.status(400).json({
@@ -395,7 +601,7 @@ app.post("/reset-password", async (req, res) => {
         }
 
         if (new Date() > stored.expiresAt) {
-            await OTP.deleteMany({ email: normalizedEmail });
+            await OTP.deleteMany({ email: normalizedEmail, type: "forgot-password" });
             return res.status(400).json({
                 message: "OTP has expired. Please request a new one."
             });
@@ -408,7 +614,7 @@ app.post("/reset-password", async (req, res) => {
             { password: hashedPassword }
         );
 
-        await OTP.deleteMany({ email: normalizedEmail });
+        await OTP.deleteMany({ email: normalizedEmail, type: "forgot-password" });
 
         res.json({
             message: "Password reset successfully"
