@@ -2,9 +2,10 @@ import { useEffect, useState } from "react";
 import "./App.css";
 
 const API_URL =
-  window.location.hostname === "localhost"
+  import.meta.env.VITE_API_URL ||
+  (window.location.hostname === "localhost"
     ? "http://localhost:5000"
-    : "";
+    : "https://online-quiz-ai-backend.vercel.app");
 
 const POPULAR_TOPICS = [
   { title: "Python Programming", tag: "Coding", desc: "Syntax, OOP, and data structures" },
