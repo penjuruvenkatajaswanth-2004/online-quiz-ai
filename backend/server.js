@@ -60,6 +60,32 @@ app.get("/api/health", (req, res) => {
 
 
 // =====================================================
+// DB INFO DIAGNOSTIC ENDPOINT
+// =====================================================
+
+app.get("/api/db-info", (req, res) => {
+  try {
+    const isConnected = mongoose.connection.readyState === 1;
+
+    const databaseName = isConnected
+      ? (mongoose.connection.db?.databaseName || mongoose.connection.name || null)
+      : null;
+
+    res.json({
+      connected: isConnected,
+      databaseName: databaseName
+    });
+  } catch (err) {
+    res.status(500).json({
+      connected: false,
+      databaseName: null
+    });
+  }
+});
+
+
+
+// =====================================================
 // TEST DATABASE
 // =====================================================
 
