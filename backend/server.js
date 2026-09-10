@@ -64,6 +64,26 @@ app.get("/api/health", (req, res) => {
 // =====================================================
 
 app.get("/api/db-info", async (req, res) => {
+  let mongoHost = null;
+  let uriDatabaseName = null;
+
+  try {
+    const rawUri = process.env.MONGO_URI || "";
+    if (rawUri) {
+      const hostMatch = rawUri.match(/@([^/\?:]+)/);
+      if (hostMatch && hostMatch[1]) {
+        mongoHost = hostMatch[1];
+      }
+
+      const dbMatch = rawUri.match(/@(?:[^/\?]+)\/([^?\s]+)/);
+      if (dbMatch && dbMatch[1]) {
+        uriDatabaseName = dbMatch[1];
+      }
+    }
+  } catch (parseErr) {
+    // Ignore URI extraction errors
+  }
+
   try {
     if (mongoose.connection.readyState !== 1) {
       await connectDB();
@@ -72,17 +92,19 @@ app.get("/api/db-info", async (req, res) => {
     const isConnected = mongoose.connection.readyState === 1;
 
     const databaseName = isConnected
-      ? (mongoose.connection.db?.databaseName || mongoose.connection.name || null)
-      : null;
+      ? (mongoose.connection.db?.databaseName || mongoose.connection.name || uriDatabaseName)
+      : uriDatabaseName;
 
     res.json({
       connected: isConnected,
-      databaseName: databaseName
+      databaseName: databaseName,
+      mongoHost: mongoHost
     });
   } catch (err) {
-    res.status(500).json({
+    res.json({
       connected: false,
-      databaseName: null
+      databaseName: uriDatabaseName,
+      mongoHost: mongoHost
     });
   }
 });
