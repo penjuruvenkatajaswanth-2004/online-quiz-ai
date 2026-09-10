@@ -63,8 +63,12 @@ app.get("/api/health", (req, res) => {
 // DB INFO DIAGNOSTIC ENDPOINT
 // =====================================================
 
-app.get("/api/db-info", (req, res) => {
+app.get("/api/db-info", async (req, res) => {
   try {
+    if (mongoose.connection.readyState !== 1) {
+      await connectDB();
+    }
+
     const isConnected = mongoose.connection.readyState === 1;
 
     const databaseName = isConnected
