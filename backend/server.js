@@ -16,6 +16,7 @@ const User = require("./models/User");
 const Quiz = require("./models/Quiz");
 const Question = require("./models/Question");
 const Result = require("./models/Result");
+const OTP = require("./models/OTP");
 
 const app = express();
 
@@ -31,10 +32,8 @@ connectDB();
 
 
 // =====================================================
-// OTP STORE & EMAIL TRANSPORTER
+// EMAIL TRANSPORTER
 // =====================================================
-
-const otpStore = new Map();
 
 const transporter = nodemailer.createTransport({
     service: "gmail",
@@ -246,7 +245,9 @@ app.post("/forgot-password", async (req, res) => {
             });
         }
 
-        const user = await User.findOne({ email });
+        const normalizedEmail = email.trim().toLowerCase();
+
+        const user = await User.findOne({ email: normalizedEmail });
 
         if (!user) {
             return res.status(404).json({
@@ -254,17 +255,20 @@ app.post("/forgot-password", async (req, res) => {
             });
         }
 
+        await OTP.deleteMany({ email: normalizedEmail });
+
         const otp = generateOTP();
 
-        otpStore.set(email, {
+        await OTP.create({
+            email: normalizedEmail,
             otp: otp,
-            expiresAt: Date.now() + 5 * 60 * 1000,
+            expiresAt: new Date(Date.now() + 5 * 60 * 1000),
             verified: false
         });
 
         const mailOptions = {
             from: `"QuizAI" <${process.env.EMAIL_USER}>`,
-            to: email,
+            to: normalizedEmail,
             subject: "QuizAI — Password Reset OTP",
             html: `
                 <div style="font-family: Arial, sans-serif; max-width: 480px; margin: 0 auto; padding: 32px; background: #1e2030; border-radius: 12px; color: #f1f5f9;">
@@ -281,21 +285,18 @@ app.post("/forgot-password", async (req, res) => {
             `
         };
 
-        transporter.sendMail(mailOptions, (mailErr) => {
-
-            if (mailErr) {
-                console.error("Email send error:", mailErr.message);
-                return res.status(500).json({
-                    message: "Failed to send OTP email",
-                    error: mailErr.message
-                });
-            }
-
+        try {
+            await transporter.sendMail(mailOptions);
             res.json({
                 message: "OTP sent to your email"
             });
-
-        });
+        } catch (mailErr) {
+            console.error("Email send error:", mailErr.message);
+            return res.status(500).json({
+                message: "Failed to send OTP email",
+                error: mailErr.message
+            });
+        }
 
     } catch (error) {
 
@@ -313,42 +314,56 @@ app.post("/forgot-password", async (req, res) => {
 // VERIFY OTP
 // =====================================================
 
-app.post("/verify-otp", (req, res) => {
+app.post("/verify-otp", async (req, res) => {
 
-    const { email, otp } = req.body;
+    try {
 
-    if (!email || !otp) {
-        return res.status(400).json({
-            message: "Email and OTP are required"
+        const { email, otp } = req.body;
+
+        if (!email || !otp) {
+            return res.status(400).json({
+                message: "Email and OTP are required"
+            });
+        }
+
+        const normalizedEmail = email.trim().toLowerCase();
+
+        const stored = await OTP.findOne({ email: normalizedEmail }).sort({ createdAt: -1 });
+
+        if (!stored) {
+            return res.status(400).json({
+                message: "No OTP found. Please request a new one."
+            });
+        }
+
+        if (new Date() > stored.expiresAt) {
+            await OTP.deleteMany({ email: normalizedEmail });
+            return res.status(400).json({
+                message: "OTP has expired. Please request a new one."
+            });
+        }
+
+        if (stored.otp !== String(otp).trim()) {
+            return res.status(400).json({
+                message: "Invalid OTP"
+            });
+        }
+
+        stored.verified = true;
+        await stored.save();
+
+        res.json({
+            message: "OTP verified successfully"
         });
-    }
 
-    const stored = otpStore.get(email);
+    } catch (error) {
 
-    if (!stored) {
-        return res.status(400).json({
-            message: "No OTP found. Please request a new one."
+        res.status(500).json({
+            message: "Server error",
+            error: error.message
         });
+
     }
-
-    if (Date.now() > stored.expiresAt) {
-        otpStore.delete(email);
-        return res.status(400).json({
-            message: "OTP has expired. Please request a new one."
-        });
-    }
-
-    if (stored.otp !== otp) {
-        return res.status(400).json({
-            message: "Invalid OTP"
-        });
-    }
-
-    stored.verified = true;
-
-    res.json({
-        message: "OTP verified successfully"
-    });
 
 });
 
@@ -369,23 +384,31 @@ app.post("/reset-password", async (req, res) => {
             });
         }
 
-        const stored = otpStore.get(email);
+        const normalizedEmail = email.trim().toLowerCase();
 
-        if (!stored || !stored.verified) {
+        const stored = await OTP.findOne({ email: normalizedEmail, verified: true });
+
+        if (!stored) {
             return res.status(400).json({
                 message: "Please verify OTP first"
             });
         }
 
-        const hashedPassword =
-            await bcrypt.hash(newPassword, 10);
+        if (new Date() > stored.expiresAt) {
+            await OTP.deleteMany({ email: normalizedEmail });
+            return res.status(400).json({
+                message: "OTP has expired. Please request a new one."
+            });
+        }
+
+        const hashedPassword = await bcrypt.hash(newPassword, 10);
 
         await User.updateOne(
-            { email },
+            { email: normalizedEmail },
             { password: hashedPassword }
         );
 
-        otpStore.delete(email);
+        await OTP.deleteMany({ email: normalizedEmail });
 
         res.json({
             message: "Password reset successfully"

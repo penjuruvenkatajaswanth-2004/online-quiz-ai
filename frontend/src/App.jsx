@@ -188,7 +188,7 @@ function App() {
       });
       const data = await response.json();
       if (!response.ok) {
-        setMessage(data.message || "Failed to send OTP");
+        setMessage(data.error || data.message || "Failed to send OTP");
         return;
       }
       setMessage("OTP sent to your email. Please verify.");
