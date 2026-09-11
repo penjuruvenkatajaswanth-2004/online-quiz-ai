@@ -25,10 +25,20 @@ app.use(express.json());
 
 
 // =====================================================
-// CONNECT TO MONGODB
+// MONGODB CONNECTION MIDDLEWARE
 // =====================================================
 
-connectDB();
+app.use(async (req, res, next) => {
+    if (req.path === "/api/health" || req.path === "/") {
+        return next();
+    }
+    try {
+        await connectDB();
+    } catch (err) {
+        console.error("Database connection middleware error:", err.message);
+    }
+    next();
+});
 
 
 // =====================================================
